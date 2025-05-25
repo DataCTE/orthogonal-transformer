@@ -11,6 +11,7 @@ from typing import List, Dict, Tuple
 import json
 from datasets import load_dataset
 import torch.optim.lr_scheduler
+from sklearn.decomposition import PCA # Added import
 
 class OrthogonalConceptTester:
     """Test suite for orthogonal token prediction concept"""
@@ -289,6 +290,79 @@ class OrthogonalConceptTester:
         plt.tight_layout()
         plt.savefig('orthogonal_concept_analysis.png', dpi=150)
         plt.close()
+        print("Visualizations saved to 'orthogonal_concept_analysis.png'") # Added print statement
+    
+    def visualize_embedding_point_cloud(self, words_for_cloud: List[str], filename: str = "orthogonal_embedding_point_cloud.png"):
+        """
+        Visualizes a 2D PCA projection of character embeddings from specified words
+        for both standard (pre-orthogonal transformation) and inverse/orthogonal space.
+        """
+        self.orthogonal_model.eval()
+        
+        all_standard_embeds_list = []
+        all_inverse_embeds_list = []
+        all_labels = []
+        
+        print(f"\nGenerating point cloud for words (orthogonal model): {words_for_cloud}")
+
+        with torch.no_grad():
+            for word in words_for_cloud:
+                if not word: continue
+                input_ids = torch.tensor([self.tokenizer.encode(word)], device=self.device)
+                if input_ids.nelement() == 0: continue
+
+                # Get standard embeddings (inverse=False)
+                standard_embeds_word = self.orthogonal_model.orthogonal_embedding(input_ids, inverse=False)
+                # Get inverse/orthogonal embeddings (inverse=True)
+                inverse_embeds_word = self.orthogonal_model.orthogonal_embedding(input_ids, inverse=True)
+
+                for i, token_id in enumerate(input_ids[0]):
+                    char_label = self.tokenizer.decode([token_id.item()])
+                    all_labels.append(f"{char_label}({word[:2]})") 
+
+                    all_standard_embeds_list.append(standard_embeds_word[0, i, :].unsqueeze(0))
+                    all_inverse_embeds_list.append(inverse_embeds_word[0, i, :].unsqueeze(0))
+        
+        if not all_standard_embeds_list or not all_inverse_embeds_list:
+            print("No embeddings generated for point cloud. Skipping visualization.")
+            return
+
+        all_standard_embeds = torch.cat(all_standard_embeds_list, dim=0).cpu().numpy()
+        all_inverse_embeds = torch.cat(all_inverse_embeds_list, dim=0).cpu().numpy()
+
+        if all_standard_embeds.shape[0] < 2 or all_inverse_embeds.shape[0] < 2:
+            print("Not enough data points for PCA. Skipping point cloud visualization.")
+            return
+
+        pca_standard = PCA(n_components=2, random_state=42)
+        standard_2d = pca_standard.fit_transform(all_standard_embeds)
+        
+        pca_inverse = PCA(n_components=2, random_state=42)
+        inverse_2d = pca_inverse.fit_transform(all_inverse_embeds)
+        
+        fig, axes = plt.subplots(1, 2, figsize=(16, 8))
+        fig.suptitle("Character Embedding Point Cloud (Orthogonal Model - PCA Reduced)", fontsize=16)
+
+        axes[0].scatter(standard_2d[:, 0], standard_2d[:, 1], alpha=0.7)
+        for i, label in enumerate(all_labels):
+            axes[0].annotate(label, (standard_2d[i, 0], standard_2d[i, 1]), fontsize=8)
+        axes[0].set_title(f'Standard Embeddings (d_model={self.orthogonal_model.d_model})')
+        axes[0].set_xlabel('PCA Component 1')
+        axes[0].set_ylabel('PCA Component 2')
+        axes[0].grid(True, linestyle='--', alpha=0.5)
+
+        axes[1].scatter(inverse_2d[:, 0], inverse_2d[:, 1], alpha=0.7, color='green')
+        for i, label in enumerate(all_labels):
+            axes[1].annotate(label, (inverse_2d[i, 0], inverse_2d[i, 1]), fontsize=8)
+        axes[1].set_title(f'Inverse/Orthogonal Embeddings (d_model={self.orthogonal_model.d_model})')
+        axes[1].set_xlabel('PCA Component 1')
+        axes[1].set_ylabel('PCA Component 2')
+        axes[1].grid(True, linestyle='--', alpha=0.5)
+        
+        plt.tight_layout(rect=[0, 0, 1, 0.95])
+        plt.savefig(filename, dpi=150)
+        plt.close()
+        print(f"Point cloud visualization saved to '{filename}'")
     
     def _generate_tokens(self, model, prompt, max_length, temperature, is_standard=False):
         """Helper to generate tokens"""
@@ -619,6 +693,15 @@ def run_comprehensive_tests():
     # Visualize
     print("\nGenerating visualizations...")
     tester.visualize_results(all_results) # This might need adjustment if keys change
+    
+    # Define words for point cloud visualization
+    point_cloud_words = [
+        "king", "queen", "man", "woman", 
+        "apple", "orange", "fruit", 
+        "happy", "sad", "joy", "fear",
+        "run", "walk", "fast", "slow"
+    ]
+    tester.visualize_embedding_point_cloud(point_cloud_words) # Call the new method
     
     # Print summary
     print("\n" + "="*50)
