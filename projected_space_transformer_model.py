@@ -10,87 +10,102 @@ from sklearn.decomposition import PCA
 import seaborn as sns
 from tqdm import tqdm
 
-class ProjectedTokenEmbedding(nn.Module):
+class OrthogonalProjectedTokenEmbedding(nn.Module):
     """
-    Creates token embeddings and their linearly projected representations.
+    Creates double orthogonal embeddings: first transforms to orthogonal space,
+    then projects to a second orthogonal space (both in d_model dimensions).
     """
-    def __init__(self, vocab_size: int, d_model: int, d_projection: int):
+    def __init__(self, vocab_size: int, d_model: int, d_projection: int = None):
         super().__init__()
         self.vocab_size = vocab_size
         self.d_model = d_model
-        self.d_projection = d_projection 
-
+        # d_projection is kept for compatibility but should equal d_model
+        self.d_projection = d_model if d_projection is None else d_projection
         if self.d_projection != self.d_model:
-             print(f"Warning: ProjectedTokenEmbedding often expects d_projection ({d_projection}) == d_model ({d_model}) for these experiments. Ensure this is intended if they differ.")
-
-        self.embedding = nn.Embedding(vocab_size, d_model)
-        self.projection_layer = nn.Linear(d_model, self.d_projection)
+            print(f"Warning: d_projection ({self.d_projection}) != d_model ({self.d_model}). Using d_model for orthogonal projection.")
+            self.d_projection = self.d_model
         
-    def _init_orthogonal_matrix(self, size: int) -> torch.Tensor: # This method is no longer used by this class
-        # Kept for reference or if switching back, but not active for current nn.Linear approach
+        # Standard embedding (same as baseline)
+        self.embedding = nn.Embedding(vocab_size, d_model)
+        
+        # First orthogonal transformation (same as baseline)
+        self.register_buffer('orthogonal_matrix', self._init_orthogonal_matrix(d_model))
+        self.transform_weight = nn.Parameter(torch.eye(d_model))
+        
+        # Second orthogonal transformation for projection space
+        self.register_buffer('projection_orthogonal_matrix', self._init_orthogonal_matrix(d_model))
+        self.projection_transform_weight = nn.Parameter(torch.eye(d_model))
+        
+    def _init_orthogonal_matrix(self, size: int) -> torch.Tensor:
+        """Initialize an orthogonal matrix using QR decomposition"""
         random_matrix = torch.randn(size, size)
         q, _ = torch.linalg.qr(random_matrix)
         return q
-
-    def forward(self, x: torch.Tensor, to_projected_space: bool = False) -> torch.Tensor:
+    
+    def forward(self, x: torch.Tensor, inverse: bool = False, project: bool = True) -> torch.Tensor:
         """
-        Forward pass.
-        If to_projected_space is True, returns the linearly projected (projected) representation.
-        Otherwise (for tests like embedding independence), returns the standard d_model embedding.
+        Forward pass with double orthogonal transformation.
+        inverse: Apply inverse transformation (baseline behavior)
+        project: Apply second orthogonal transformation
         """
-        embed = self.embedding(x) # (batch, seq_len, d_model)
+        embed = self.embedding(x)
         
-        if to_projected_space:
-            # Transform to the "projected" space used for processing
-            return self.projection_layer(embed)
+        # First orthogonal transformation (same as baseline)
+        transform = self.transform_weight @ self.orthogonal_matrix
+        
+        if inverse:
+            orthogonal_embed = embed @ transform.T
         else:
-            # Return the original standard embedding if not transforming to projected space
-            # This is useful for comparing against the projected space in tests.
-            return embed
-
-    def get_logits_from_projected_space(self, projected_output: torch.Tensor) -> torch.Tensor:
-        """
-        Calculates logits from a projected space representation.
-        projected_output: tensor from the transformer stack, shape (batch, seq_len, d_projection) 
-                       (where d_projection == d_model in the current setup)
-        """
-        # Project all vocabulary embeddings into the same "projected" space
-        all_vocab_standard_embeds = self.embedding.weight # (vocab_size, d_model)
-        all_vocab_projected_embeds = self.projection_layer(all_vocab_standard_embeds) # (vocab_size, d_projection)
-
-        # Ensure projected_output is at least 2D for matmul: (N, d_projection)
-        original_shape = projected_output.shape
-        if projected_output.ndim == 1: 
-            projected_output = projected_output.unsqueeze(0)
-        elif projected_output.ndim > 2: 
-            projected_output = projected_output.reshape(-1, self.d_projection)
+            orthogonal_embed = embed @ transform
         
-        # Compute dot product similarity
-        logits = torch.matmul(projected_output, all_vocab_projected_embeds.T)
+        # Second orthogonal transformation (the "projection")
+        if project:
+            projection_transform = self.projection_transform_weight @ self.projection_orthogonal_matrix
+            # This is still d_model -> d_model, but in a different orthogonal basis
+            projected = orthogonal_embed @ projection_transform
+            return projected
+        else:
+            return orthogonal_embed
+    
+    def invert_embedding(self, embedding: torch.Tensor, from_projected: bool = True) -> torch.Tensor:
+        """
+        Convert embeddings back to token space.
+        """
+        transform = self.transform_weight @ self.orthogonal_matrix
         
-        if len(original_shape) > 2:
-            logits = logits.reshape(original_shape[0], original_shape[1], -1)
-        elif len(original_shape) == 1 and logits.shape[0] == 1:
-            logits = logits.squeeze(0)
+        if from_projected:
+            # First undo the projection transformation
+            projection_transform = self.projection_transform_weight @ self.projection_orthogonal_matrix
+            # Inverse of orthogonal matrix is its transpose
+            unprojected = embedding @ projection_transform.T
+            # Then undo the base transformation
+            standard_embed = unprojected @ transform
+        else:
+            # Just undo the base transformation
+            standard_embed = embedding @ transform
+            
+        # Find nearest token
+        all_embeddings = self.embedding.weight
+        distances = torch.cdist(standard_embed.unsqueeze(1), all_embeddings.unsqueeze(0))
+        return distances.argmin(dim=-1)
 
-        return logits
-
-class MultiHeadProjectedAttention(nn.Module):
+class MultiHeadOrthogonalProjectedAttention(nn.Module):
     """
-    Multi-head attention that operates in the projected space (d_projection)
+    Multi-head attention operating in orthogonal space.
     """
-    def __init__(self, d_projection: int, n_heads: int, dropout: float = 0.1):
+    def __init__(self, d_model: int, n_heads: int, dropout: float = 0.1):
         super().__init__()
-        assert d_projection % n_heads == 0
+        assert d_model % n_heads == 0
         
-        self.d_projection = d_projection
+        self.d_model = d_model
         self.n_heads = n_heads
-        self.d_k = d_projection // n_heads
+        self.d_k = d_model // n_heads
         
-        self.W_q = nn.Linear(d_projection, d_projection)
-        self.W_k = nn.Linear(d_projection, d_projection)
-        self.W_v = nn.Linear(d_projection, d_projection)
-        self.W_o = nn.Linear(d_projection, d_projection)
+        # Same structure as baseline
+        self.W_q = nn.Linear(d_model, d_model)
+        self.W_k = nn.Linear(d_model, d_model)
+        self.W_v = nn.Linear(d_model, d_model)
+        self.W_o = nn.Linear(d_model, d_model)
         
         self.dropout = nn.Dropout(dropout)
         
@@ -98,12 +113,10 @@ class MultiHeadProjectedAttention(nn.Module):
                 mask: Optional[torch.Tensor] = None) -> torch.Tensor:
         batch_size = query.size(0)
         
-        # Linear transformations and reshape
         Q = self.W_q(query).view(batch_size, -1, self.n_heads, self.d_k).transpose(1, 2)
         K = self.W_k(key).view(batch_size, -1, self.n_heads, self.d_k).transpose(1, 2)
         V = self.W_v(value).view(batch_size, -1, self.n_heads, self.d_k).transpose(1, 2)
         
-        # Attention scores
         scores = torch.matmul(Q, K.transpose(-2, -1)) / math.sqrt(self.d_k)
         
         if mask is not None:
@@ -112,30 +125,27 @@ class MultiHeadProjectedAttention(nn.Module):
         attention_weights = F.softmax(scores, dim=-1)
         attention_weights = self.dropout(attention_weights)
         
-        # Apply attention to values
         context = torch.matmul(attention_weights, V)
-        
-        # Reshape and apply output projection
-        context = context.transpose(1, 2).contiguous().view(batch_size, -1, self.d_projection)
+        context = context.transpose(1, 2).contiguous().view(batch_size, -1, self.d_model)
         output = self.W_o(context)
         
         return output
 
-class ProjectedSpaceTransformerBlock(nn.Module):
+class OrthogonalProjectedTransformerBlock(nn.Module):
     """
-    Transformer block operating in projected space (d_projection)
+    Transformer block operating in orthogonal projected space.
     """
-    def __init__(self, d_projection: int, n_heads: int, d_ff_projection: int, dropout: float = 0.1):
+    def __init__(self, d_model: int, n_heads: int, d_ff: int, dropout: float = 0.1):
         super().__init__()
-        self.attention = MultiHeadProjectedAttention(d_projection, n_heads, dropout)
-        self.norm1 = nn.LayerNorm(d_projection)
-        self.norm2 = nn.LayerNorm(d_projection)
+        self.attention = MultiHeadOrthogonalProjectedAttention(d_model, n_heads, dropout)
+        self.norm1 = nn.LayerNorm(d_model)
+        self.norm2 = nn.LayerNorm(d_model)
         
         self.feed_forward = nn.Sequential(
-            nn.Linear(d_projection, d_ff_projection),
+            nn.Linear(d_model, d_ff),
             nn.ReLU(),
             nn.Dropout(dropout),
-            nn.Linear(d_ff_projection, d_projection),
+            nn.Linear(d_ff, d_model),
             nn.Dropout(dropout)
         )
         
@@ -150,33 +160,44 @@ class ProjectedSpaceTransformerBlock(nn.Module):
 
 class ProjectedSpaceTransformer(nn.Module):
     """
-    Predicts next tokens by reasoning in a transformed "projected space".
+    Transformer that operates in a double orthogonal space.
+    First applies baseline orthogonal transformation, then projects to another orthogonal space.
     """
-    def __init__(self, vocab_size: int, d_model: int, d_projection: int,
-                 n_heads: int = 8, n_layers: int = 6, d_ff_projection: int = 2048,
-                 max_seq_len: int = 512, dropout: float = 0.1):
+    def __init__(self, vocab_size: int, d_model: int = 512, d_projection: int = None,
+                 n_heads: int = 8, n_layers: int = 6, d_ff: int = 2048, 
+                 d_ff_projection: int = None, max_seq_len: int = 512,
+                 dropout: float = 0.1):
         super().__init__()
         
         self.d_model = d_model
-        self.d_projection = d_projection
+        # Force d_projection to equal d_model for true orthogonal projection
+        self.d_projection = d_model
+        self.use_projection = True  # Always use double orthogonal transformation
         
-        self.token_embedder = ProjectedTokenEmbedding(vocab_size, d_model, d_projection)
+        # Use extended embedding layer
+        self.orthogonal_embedding = OrthogonalProjectedTokenEmbedding(vocab_size, d_model, self.d_projection)
         
-        self.positional_encoding = self._create_positional_encoding(max_seq_len, self.d_projection)
+        # Positional encoding in d_model space
+        self.positional_encoding = self._create_positional_encoding(max_seq_len, d_model)
         
+        # Transformer blocks in d_model space
+        d_ff_working = d_ff if d_ff_projection is None else d_ff
         self.transformer_blocks = nn.ModuleList([
-            ProjectedSpaceTransformerBlock(d_projection, n_heads, d_ff_projection, dropout)
+            OrthogonalProjectedTransformerBlock(d_model, n_heads, d_ff_working, dropout)
             for _ in range(n_layers)
         ])
         
-        self.norm = nn.LayerNorm(d_projection)
+        self.norm = nn.LayerNorm(d_model)
         self.dropout = nn.Dropout(dropout)
         
-    def _create_positional_encoding(self, max_seq_len: int, dim: int) -> torch.Tensor:
-        pe = torch.zeros(max_seq_len, dim)
+        # Output projection to inverse token space
+        self.output_projection = nn.Linear(d_model, d_model)
+        
+    def _create_positional_encoding(self, max_seq_len: int, d_model: int) -> torch.Tensor:
+        pe = torch.zeros(max_seq_len, d_model)
         position = torch.arange(0, max_seq_len, dtype=torch.float).unsqueeze(1)
-        div_term = torch.exp(torch.arange(0, dim, 2).float() * 
-                           (-math.log(10000.0) / dim))
+        div_term = torch.exp(torch.arange(0, d_model, 2).float() * 
+                           (-math.log(10000.0) / d_model))
         
         pe[:, 0::2] = torch.sin(position * div_term)
         pe[:, 1::2] = torch.cos(position * div_term)
@@ -191,21 +212,40 @@ class ProjectedSpaceTransformer(nn.Module):
         seq_len = input_ids.size(1)
         device = input_ids.device
         
-        x = self.token_embedder(input_ids, to_projected_space=True)
+        # Get double orthogonal embeddings (inverse + projected)
+        x = self.orthogonal_embedding(input_ids, inverse=True, project=True)
         
+        # Add positional encoding
         x = x + self.positional_encoding[:, :seq_len, :].to(device)
         x = self.dropout(x)
         
+        # Create causal mask
         mask = self.create_causal_mask(seq_len, device)
         
+        # Pass through transformer blocks
         for block in self.transformer_blocks:
             x = block(x, mask)
         
-        projected_reprs = self.norm(x)
+        x = self.norm(x)
         
-        logits = self.token_embedder.get_logits_from_projected_space(projected_reprs)
+        # Project to inverse token prediction space
+        inverse_predictions = self.output_projection(x)
         
-        return logits, projected_reprs
+        # Convert inverse predictions back to token logits
+        # Get all vocabulary embeddings in double orthogonal space
+        all_embeddings = self.orthogonal_embedding.embedding.weight
+        
+        # Apply first orthogonal transformation
+        transform = self.orthogonal_embedding.transform_weight @ self.orthogonal_embedding.orthogonal_matrix
+        all_inverse = all_embeddings @ transform.T
+        
+        # Apply second orthogonal transformation
+        projection_transform = self.orthogonal_embedding.projection_transform_weight @ self.orthogonal_embedding.projection_orthogonal_matrix
+        all_projected = all_inverse @ projection_transform
+        
+        logits = torch.matmul(inverse_predictions, all_projected.T)
+        
+        return logits, inverse_predictions
 
 class TextDataset(Dataset):
     """Simple text dataset for training"""
@@ -233,7 +273,6 @@ class TextDataset(Dataset):
             tokens = tokens + [0] * (self.max_length - len(tokens))
         return torch.tensor(tokens[:-1]), torch.tensor(tokens[1:])
 
-# Simple character-level tokenizer for demonstration
 class CharTokenizer:
     def __init__(self):
         self.char_to_id = {}
@@ -261,10 +300,8 @@ class CharTokenizer:
     def decode(self, ids):
         return ''.join([self.id_to_char.get(id, '<UNK>') for id in ids])
 
-def train_projected_space_model(model, train_loader, epochs=10, lr=1e-3, device=None, tokenizer=None, 
-                           print_every_n_steps=100, orth_loss_weight: float = 0.01,
-                           aux_relational_loss_weight: float = 0.001): # New auxiliary loss weight
-    """Training loop for the ProjectedSpace model, with projected space regularization and auxiliary relational loss."""
+def train_projected_space_model(model, train_loader, epochs=10, lr=1e-3, device=None, tokenizer=None, print_every_n_steps=100):
+    """Training loop - follows baseline train_orthogonal_model exactly"""
     if device is None:
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     
@@ -278,101 +315,38 @@ def train_projected_space_model(model, train_loader, epochs=10, lr=1e-3, device=
         pad_token_id = tokenizer.char_to_id['<PAD>']
 
     criterion = nn.CrossEntropyLoss(ignore_index=pad_token_id)
-    aux_criterion = nn.MSELoss() # For predicting cosine similarities
-
+    
     model.train()
     for epoch in range(epochs):
         total_epoch_loss = 0
         num_batches = 0
         
         running_loss_100_steps = 0.0
+        steps_in_epoch = 0
 
         progress_bar = tqdm(train_loader, desc=f"Epoch {epoch + 1}/{epochs}", unit="batch")
         
-        for batch_idx, (input_ids_full, target_ids) in enumerate(progress_bar): # input_ids_full includes the last token for target
-            # We need original input_ids for the auxiliary task, not just input_ids for model fwd pass
-            # input_ids for model: input_ids_full[:, :-1]
-            # target_ids for model: input_ids_full[:, 1:] 
-            # (Assuming TextDataset returns full sequence and then slices. Let's adjust if needed)
-            # For simplicity, let's assume train_loader gives (input_ids_for_model, target_ids_for_model)
-            # and we can reconstruct the original token sequence that led to input_ids_for_model for aux task
-            
-            input_ids, target_ids = input_ids_full.to(device), target_ids.to(device) # Assuming train_loader now gives (input_ids, target_ids) suitable for model
+        for batch_idx, (input_ids, target_ids) in enumerate(progress_bar):
+            input_ids, target_ids = input_ids.to(device), target_ids.to(device)
+            steps_in_epoch += 1
             
             optimizer.zero_grad()
             
-            logits, projected_reprs = model(input_ids) # projected_reprs are (batch, seq_len, d_projection)
+            logits, inverse_preds = model(input_ids)
             
-            main_loss = criterion(logits.reshape(-1, logits.size(-1)), target_ids.reshape(-1))
-            loss = main_loss
+            loss = criterion(logits.reshape(-1, logits.size(-1)), target_ids.reshape(-1))
             
-            # Orthogonality regularization on projected_reprs
-            if orth_loss_weight > 0 and hasattr(model, 'd_projection'):
-                batch_size_orth, seq_len_orth, d_projection_dim_orth = projected_reprs.shape
-                projected_flat = projected_reprs.reshape(-1, d_projection_dim_orth)
-                projected_norm = F.normalize(projected_flat, p=2, dim=1)
-                if projected_norm.shape[0] > 1 and projected_norm.shape[1] > 1 :
-                    corr_matrix = torch.matmul(projected_norm.T, projected_norm) / projected_norm.shape[0]
-                    identity = torch.eye(d_projection_dim_orth, device=device)
-                    orth_loss_val = torch.norm(corr_matrix - identity, p='fro')
-                    loss = loss + orth_loss_weight * orth_loss_val
-
-            # Auxiliary Relational Loss
-            if aux_relational_loss_weight > 0 and input_ids.size(0) > 1 and input_ids.size(1) > 1: # Need at least 2 items in batch and seq for pairs
-                # Get initial projected embeddings (without positional, pre-transformer)
-                # This requires access to the raw token_ids that formed the input_ids sequence
-                # For simplicity, let's use the input_ids themselves (which are token IDs)
-                # and project them through the embedder's projection_layer
-                
-                # We need the *original* full sequence of embeddings for comparison.
-                # model.token_embedder.embedding(input_ids) gives (batch, seq_len, d_model)
-                # model.token_embedder.projection_layer(...) projects these.
-
-                # Let's try to predict similarity of initial *projected* embeddings from *contextualized* projected_reprs
-                # This is a bit indirect. A more direct way would be to compare projected embeddings of tokens
-                # from the original input sequence.
-                
-                # Simplified approach: try to reconstruct pairwise cosine similarities
-                # of the *initial projected embeddings* from the *final projected_reprs*.
-                # This is complex to set up efficiently in the loop.
-
-                # Alternative simpler auxiliary task:
-                # Can the model predict the distance between its own projected_reprs for t and t+1?
-                # This doesn't directly involve "seeing all representations" but internal consistency.
-
-                # Let's stick to a simpler concept for now that is easier to implement:
-                # Ensure the `projected_reprs` (final contextualized representations) for adjacent tokens
-                # are not *too* dissimilar if the original tokens were similar, or *too* similar if different.
-                # This still requires a notion of original token similarity.
-
-                # --- Simplest Auxiliary: Predict variance of projected_reprs along sequence ----
-                # This encourages projected_reprs to change, promoting some dynamic. Low weight.
-                # This is not directly "seeing distances between all representations"
-                # but a very gentle structural nudge.
-                
-                # For a more direct "seeing distances":
-                # We need to compare pairs. Let's take first two elements of seq in projected_reprs
-                # And compare with first two elements of initial projected embeddings
-                
-                if input_ids.size(1) >= 2: # Need at least two tokens in sequence
-                    # Get initial projected embeddings for the first two tokens of each batch item
-                    # We assume input_ids are the token indices for the model's input sequence
-                    initial_embeds = model.token_embedder.embedding(input_ids[:, :2]) # (batch, 2, d_model)
-                    projected_initial_embeds = model.token_embedder.projection_layer(initial_embeds) # (batch, 2, d_projection)
-                    
-                    # Calculate target cosine similarity for these initial projected pairs
-                    # projected_initial_embeds[:, 0, :] is (batch, d_projection)
-                    # projected_initial_embeds[:, 1, :] is (batch, d_projection)
-                    target_sim = F.cosine_similarity(projected_initial_embeds[:, 0, :], projected_initial_embeds[:, 1, :], dim=1) # (batch)
-                    
-                    # Predict this similarity from the corresponding projected_reprs
-                    # projected_reprs[:, 0, :] and projected_reprs[:, 1, :]
-                    pred_sim = F.cosine_similarity(projected_reprs[:, 0, :], projected_reprs[:, 1, :], dim=1) # (batch)
-                    
-                    aux_loss = aux_criterion(pred_sim, target_sim.detach()) # Detach target to not backprop through it for this path
-                    loss = loss + aux_relational_loss_weight * aux_loss
-
-            current_batch_loss = loss
+            # Add orthogonality regularization (same as baseline)
+            working_dim = inverse_preds.shape[-1]
+            batch_size, seq_len, _ = inverse_preds.shape
+            inverse_flat = inverse_preds.reshape(-1, working_dim)
+            inverse_norm = F.normalize(inverse_flat, p=2, dim=1)
+            corr_matrix = torch.matmul(inverse_norm.T, inverse_norm) / inverse_norm.shape[0]
+            identity = torch.eye(working_dim, device=device)
+            orth_loss = torch.norm(corr_matrix - identity, p='fro')
+            
+            current_batch_loss = loss + 0.01 * orth_loss
+            
             current_batch_loss.backward()
             torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
             optimizer.step()
@@ -380,18 +354,15 @@ def train_projected_space_model(model, train_loader, epochs=10, lr=1e-3, device=
             batch_loss_item = current_batch_loss.item()
             total_epoch_loss += batch_loss_item
             running_loss_100_steps += batch_loss_item
-            num_batches +=1
+            num_batches += 1
             
             current_epoch_avg_loss = total_epoch_loss / num_batches
             progress_bar.set_postfix(batch_loss=f"{batch_loss_item:.4f}", epoch_avg_loss=f"{current_epoch_avg_loss:.4f}")
 
-            # Use batch_idx to determine print frequency
-            # (batch_idx + 1) gives the 1-indexed current step number
-            current_step_in_epoch = batch_idx + 1
-            if print_every_n_steps > 0 and current_step_in_epoch % print_every_n_steps == 0:
-                avg_loss_last_n = running_loss_100_steps / print_every_n_steps
-                tqdm.write(f"  Epoch {epoch + 1}, Step {current_step_in_epoch}/{len(train_loader)}, Avg Loss (last {print_every_n_steps} steps): {avg_loss_last_n:.4f}")
-                running_loss_100_steps = 0.0 # Reset for the next block of steps
+            if print_every_n_steps > 0 and steps_in_epoch % print_every_n_steps == 0:
+                avg_loss_last_100 = running_loss_100_steps / print_every_n_steps
+                print(f"  Epoch {epoch + 1}, Step {steps_in_epoch}/{len(train_loader)}, Avg Loss (last {print_every_n_steps} steps): {avg_loss_last_100:.4f}")
+                running_loss_100_steps = 0.0
             
         avg_epoch_loss = total_epoch_loss / num_batches if num_batches > 0 else 0
         progress_bar.close()
@@ -399,28 +370,28 @@ def train_projected_space_model(model, train_loader, epochs=10, lr=1e-3, device=
 def generate_text(model, tokenizer, prompt, max_length=100, temperature=1.0):
     """Generate text using the model"""
     model.eval()
-    device = next(model.parameters()).device # Get device from model
-    input_ids = torch.tensor([tokenizer.encode(prompt)], device=device) # Move to device
+    device = next(model.parameters()).device
+    input_ids = torch.tensor([tokenizer.encode(prompt)], device=device)
     
-    is_projected_space_model = hasattr(model, 'token_embedder') and hasattr(model.token_embedder, 'projection_layer')
+    is_projected_space_model = hasattr(model, 'orthogonal_embedding')
 
     with torch.no_grad():
         for _ in range(max_length):
-            if is_projected_space_model: # True for ProjectedSpaceTransformer
+            if is_projected_space_model:
                 logits, _ = model(input_ids)
-            elif isinstance(model, StandardTransformer): # Explicitly check for StandardTransformer
+            elif isinstance(model, StandardTransformer):
                 logits = model(input_ids)
             else:
                 print(f"Model type {type(model)} not recognized for generate_text in this script.")
-                return None # Or raise error
+                return None
             
             probs = F.softmax(logits[:, -1, :] / temperature, dim=-1)
             next_token = torch.multinomial(probs, 1)
             
             input_ids = torch.cat([input_ids, next_token], dim=1)
             
-            pad_token_id = tokenizer.char_to_id.get('<PAD>', 0) # Assuming CharTokenizer
-            if next_token.item() == pad_token_id: # Stop if PAD token
+            pad_token_id = tokenizer.char_to_id.get('<PAD>', 0)
+            if next_token.item() == pad_token_id:
                 break
     
     return tokenizer.decode(input_ids[0].tolist())
@@ -432,12 +403,35 @@ def analyze_orthogonality(model, tokenizer, sample_text="The quick brown fox"):
     input_ids = torch.tensor([tokenizer.encode(sample_text)]).to(next(model.parameters()).device)
     
     with torch.no_grad():
-        if hasattr(model, 'token_embedder') and hasattr(model.token_embedder, 'projection_layer'):
-            standard_embed = model.token_embedder(input_ids, to_projected_space=False)
-            projected_embed = model.token_embedder(input_ids, to_projected_space=True)
-        elif hasattr(model, 'orthogonal_embedding'):
-            standard_embed = model.orthogonal_embedding(input_ids, inverse=False)
-            projected_embed = model.orthogonal_embedding(input_ids, inverse=True)
+        if hasattr(model, 'orthogonal_embedding'):
+            # Get embeddings without projection
+            standard_embed = model.orthogonal_embedding(input_ids, inverse=False, project=False)
+            # Get embeddings with double orthogonal transformation
+            projected_embed = model.orthogonal_embedding(input_ids, inverse=True, project=True)
+            
+            # Visualize the transformation matrices
+            fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(16, 8))
+            
+            # First orthogonal transformation
+            transform1 = model.orthogonal_embedding.transform_weight @ model.orthogonal_embedding.orthogonal_matrix
+            im1 = ax1.imshow(transform1.cpu().numpy(), aspect='auto', cmap='coolwarm')
+            ax1.set_title('First Orthogonal Transformation Matrix')
+            ax1.set_xlabel('Output Dimensions')
+            ax1.set_ylabel('Input Dimensions')
+            plt.colorbar(im1, ax=ax1)
+            
+            # Second orthogonal transformation
+            transform2 = model.orthogonal_embedding.projection_transform_weight @ model.orthogonal_embedding.projection_orthogonal_matrix
+            im2 = ax2.imshow(transform2.cpu().numpy(), aspect='auto', cmap='coolwarm')
+            ax2.set_title('Second Orthogonal Transformation Matrix')
+            ax2.set_xlabel('Output Dimensions')
+            ax2.set_ylabel('Input Dimensions')
+            plt.colorbar(im2, ax=ax2)
+            
+            plt.tight_layout()
+            plt.savefig('orthogonal_transformations.png')
+            plt.close()
+            print(f"Orthogonal transformation matrices saved to 'orthogonal_transformations.png'")
         else:
             print("Model does not have recognizable embedding structure for analysis.")
             return
@@ -459,7 +453,7 @@ def analyze_orthogonality(model, tokenizer, sample_text="The quick brown fox"):
         ax1.set_title('Standard Embedding Dimension Correlations')
         
         sns.heatmap(projected_corr, ax=ax2, cmap='coolwarm', center=0, vmin=-1, vmax=1)
-        ax2.set_title('Projected Space Dimension Correlations')
+        ax2.set_title('Double Orthogonal Space Dimension Correlations')
         
         plt.tight_layout()
         plt.savefig('embedding_correlations.png')
@@ -676,7 +670,7 @@ def train_and_compare():
     train_loader = DataLoader(dataset, batch_size=4, shuffle=True)
     
     d_model_val = 128
-    d_projection_val = 64
+    d_projection_val = 64  # Actually use half the dimension!
     d_ff_model = 512
     d_ff_projection_val = 256
 
@@ -705,7 +699,7 @@ def train_and_compare():
     standard_model = StandardTransformer(**model_params_std)
     
     print("Training ProjectedSpace Model...")
-    train_projected_space_model(projected_space_model, train_loader, epochs=10, tokenizer=tokenizer, orth_loss_weight=0.01, aux_relational_loss_weight=0.001)
+    train_projected_space_model(projected_space_model, train_loader, epochs=10, tokenizer=tokenizer, print_every_n_steps=100)
     
     print("\nTraining Standard Model...")
     optimizer = torch.optim.Adam(standard_model.parameters(), lr=1e-3)

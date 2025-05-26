@@ -38,19 +38,26 @@ class ProjectedSpaceConceptTester:
                 input_ids = torch.tensor([self.tokenizer.encode(seq)], device=self.device)
                 
                 # Get projected embeddings (d_projection)
-                projected_embed = self.projected_space_model.token_embedder(input_ids, to_projected_space=True)
+                projected_embed = self.projected_space_model.orthogonal_embedding(input_ids, inverse=True, project=True)
                 # Get d_model embeddings (before projection)
-                d_model_embed = self.projected_space_model.token_embedder(input_ids, to_projected_space=False)
+                d_model_embed = self.projected_space_model.orthogonal_embedding(input_ids, inverse=True, project=False)
                 
                 projected_flat = projected_embed.reshape(-1, self.projected_space_model.d_projection)
+                d_model_flat = d_model_embed.reshape(-1, self.projected_space_model.d_model)
                 
                 if projected_flat.shape[0] < 2 or projected_flat.shape[1] < 2:
                     projected_score = float('nan')
                 else:
                     projected_cov = torch.cov(projected_flat.T)
                     projected_score = torch.abs(projected_cov - torch.diag(torch.diag(projected_cov))).mean().item()
-                
                 results['projected_space_independence'].append(projected_score)
+
+                if d_model_flat.shape[0] < 2 or d_model_flat.shape[1] < 2:
+                    d_model_score = float('nan')
+                else:
+                    d_model_cov = torch.cov(d_model_flat.T)
+                    d_model_score = torch.abs(d_model_cov - torch.diag(torch.diag(d_model_cov))).mean().item()
+                results['d_model_pre_projection_independence'].append(d_model_score)
         
         return results
     
@@ -103,7 +110,7 @@ class ProjectedSpaceConceptTester:
             
             for noise_level in noise_levels:
                 # For projected_space model, get its projected embeddings (d_projection)
-                ms_embed_projection = self.projected_space_model.token_embedder(original_ids, to_projected_space=True)
+                ms_embed_projection = self.projected_space_model.orthogonal_embedding(original_ids, inverse=True, project=True)
                 std_embed = self.standard_model.embedding(original_ids)
                 
                 ms_noisy_projection = ms_embed_projection + torch.randn_like(ms_embed_projection) * noise_level
@@ -306,15 +313,14 @@ class ProjectedSpaceConceptTester:
                 input_ids = torch.tensor([self.tokenizer.encode(word)], device=self.device)
                 if input_ids.nelement() == 0: continue
 
-                # Get d_model embeddings (pre-projection to projection)
-                standard_embeds_word = self.projected_space_model.token_embedder(input_ids, to_projected_space=False)
+                # Get d_model embeddings (pre-projection)
+                standard_embeds_word = self.projected_space_model.orthogonal_embedding(input_ids, inverse=True, project=False)
                 # Get projected embeddings (d_projection)
-                projection_embeds_word = self.projected_space_model.token_embedder(input_ids, to_projected_space=True)
+                projection_embeds_word = self.projected_space_model.orthogonal_embedding(input_ids, inverse=True, project=True)
 
                 for i, token_id in enumerate(input_ids[0]):
                     char_label = self.tokenizer.decode([token_id.item()])
-                    # Add a unique identifier if char_label is repeated across words to distinguish them in plot
-                    all_labels.append(f"{char_label}({word[:2]})") # e.g., "a(ki)" for 'a' in 'king'
+                    all_labels.append(f"{char_label}({word[:2]})")
 
                     all_standard_embeds_list.append(standard_embeds_word[0, i, :].unsqueeze(0))
                     all_projection_embeds_list.append(projection_embeds_word[0, i, :].unsqueeze(0))
@@ -345,7 +351,7 @@ class ProjectedSpaceConceptTester:
         axes[0].scatter(standard_2d[:, 0], standard_2d[:, 1], alpha=0.7)
         for i, label in enumerate(all_labels):
             axes[0].annotate(label, (standard_2d[i, 0], standard_2d[i, 1]), fontsize=8)
-        axes[0].set_title(f'Standard Embeddings (d_model={self.projected_space_model.d_model})')
+        axes[0].set_title(f'Orthogonal Embeddings (d_model={self.projected_space_model.d_model})')
         axes[0].set_xlabel('PCA Component 1')
         axes[0].set_ylabel('PCA Component 2')
         axes[0].grid(True, linestyle='--', alpha=0.5)
@@ -392,7 +398,13 @@ class ProjectedSpaceConceptTester:
         seq_len = embeddings.size(1)
         current_device = embeddings.device
         
-        pe_slice = model.positional_encoding[:, :seq_len, :].to(current_device)
+        if is_standard:
+            # Standard model uses different positional encoding access
+            pe_slice = model.positional_encoding[:, :seq_len, :].to(current_device)
+        else:
+            # Projected space model
+            pe_slice = model.positional_encoding[:, :seq_len, :].to(current_device)
+            
         x = embeddings + pe_slice 
         x = model.dropout(x)
         
@@ -406,7 +418,23 @@ class ProjectedSpaceConceptTester:
         if is_standard:
             return model.output_projection(x)
         else:
-            return model.token_embedder.get_logits_from_projected_space(x)
+            # For projected space model, we need to convert back to logits
+            inverse_predictions = model.output_projection(x)
+            
+            # Get all vocabulary embeddings in double orthogonal space
+            all_embeddings = model.orthogonal_embedding.embedding.weight
+            
+            # Apply first orthogonal transformation
+            transform = model.orthogonal_embedding.transform_weight @ model.orthogonal_embedding.orthogonal_matrix
+            all_inverse = all_embeddings @ transform.T
+            
+            # Apply second orthogonal transformation
+            projection_transform = model.orthogonal_embedding.projection_transform_weight @ model.orthogonal_embedding.projection_orthogonal_matrix
+            all_projected = all_inverse @ projection_transform
+            
+            logits = torch.matmul(inverse_predictions, all_projected.T)
+                
+            return logits
 
     def _estimate_mutual_information(self, input_ids, hidden_repr):
         input_flat = input_ids.reshape(-1).cpu().numpy()
@@ -513,7 +541,7 @@ def run_comprehensive_tests():
     val_loader = DataLoader(val_dataset, batch_size=32, shuffle=False, num_workers=2, pin_memory=True if device.type == 'cuda' else False) if val_texts else None
     
     d_model_val = 256
-    d_projection_val = d_model_val
+    d_projection_val = 128  # Actually use a lower dimensional space!
 
     model_params_projected = dict(
         vocab_size=tokenizer.vocab_size,
@@ -521,7 +549,8 @@ def run_comprehensive_tests():
         d_projection=d_projection_val,
         n_heads=8,
         n_layers=4,
-        d_ff_projection=d_projection_val * 4,
+        d_ff=d_model_val * 4,  # Use d_ff instead of d_ff_projection
+        d_ff_projection=d_projection_val * 4,  # Keep this proportional to d_projection
         max_seq_len=train_max_length,
         dropout=0.1
     )
@@ -541,14 +570,10 @@ def run_comprehensive_tests():
     
     epochs = 10
     lr = 1e-4
-    projection_regularization_weight = 0.01 
-    aux_relational_penalty = 0.001 # Example weight for auxiliary relational loss
 
     print(f"Training ProjectedSpace Model for {epochs} epochs...")
     train_projected_space_model(projected_space_model, train_loader, epochs=epochs, lr=lr, 
-                           device=device, tokenizer=tokenizer, 
-                           orth_loss_weight=projection_regularization_weight,
-                           aux_relational_loss_weight=aux_relational_penalty)
+                           device=device, tokenizer=tokenizer, print_every_n_steps=100)
     
     print(f"\nTraining Standard Model for {epochs} epochs...")
     optimizer = torch.optim.Adam(standard_model.parameters(), lr=lr)

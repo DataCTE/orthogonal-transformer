@@ -1,0 +1,128 @@
+{
+  "meta_info": {
+    "dataset_name": "wikitext",
+    "dataset_config": "wikitext-2-raw-v1",
+    "max_train_samples": 5000,
+    "max_val_samples": 500,
+    "train_max_length": 128,
+    "epochs": 10,
+    "learning_rate": 0.0001,
+    "model_params_projected": {
+      "vocab_size": 419,
+      "d_model": 256,
+      "d_projection": 128,
+      "n_heads": 8,
+      "n_layers": 4,
+      "d_ff": 1024,
+      "d_ff_projection": 512,
+      "max_seq_len": 128,
+      "dropout": 0.1
+    },
+    "model_params_standard": {
+      "vocab_size": 419,
+      "d_model": 256,
+      "n_heads": 8,
+      "n_layers": 4,
+      "d_ff": 1024,
+      "max_seq_len": 128,
+      "dropout": 0.1
+    },
+    "projected_space_perplexity": 4.729783487442001,
+    "standard_perplexity": 6.593230076125692
+  },
+  "independence": {
+    "sequences": [
+      "The quick brown fox",
+      "Machine learning models",
+      "Neural networks are",
+      "Deep learning has"
+    ],
+    "projected_space_independence": [
+      0.1211555004119873,
+      0.09543101489543915,
+      0.10877072811126709,
+      0.1075965166091919
+    ],
+    "d_model_pre_projection_independence": [
+      0.13762672245502472,
+      0.12494233250617981,
+      0.14023911952972412,
+      0.13776078820228577
+    ]
+  },
+  "diversity": {
+    "prompts": [
+      "The ",
+      "Machine learning ",
+      "Neural network is ",
+      "Deep learning can "
+    ],
+    "projected_space_diversity": [
+      0.85,
+      0.5342857142857143,
+      0.5083333333333333,
+      0.5166666666666667
+    ],
+    "standard_diversity": [
+      0.8181818181818182,
+      0.5057142857142857,
+      0.4888888888888889,
+      0.5333333333333333
+    ]
+  },
+  "robustness": {
+    "noise_levels": [
+      0.0,
+      0.05,
+      0.1,
+      0.2,
+      0.5
+    ],
+    "projected_space_robustness": [
+      3.756223634354683e-07,
+      0.03751447796821594,
+      0.15888583660125732,
+      0.5426844358444214,
+      4.072378158569336
+    ],
+    "standard_robustness": [
+      28.500274658203125,
+      28.43590545654297,
+      28.52021598815918,
+      28.64527130126953,
+      28.851104736328125
+    ]
+  },
+  "bottleneck": {
+    "sequences": [
+      "The quick brown fox",
+      "Machine learning models",
+      "Neural networks are",
+      "Deep learning has"
+    ],
+    "projected_space_entropy": [
+      1.407379388809204,
+      1.741763710975647,
+      1.5252702236175537,
+      1.6441138982772827
+    ],
+    "standard_entropy": [
+      1.7743659019470215,
+      1.976366639137268,
+      2.200784683227539,
+      2.0166900157928467
+    ],
+    "projected_space_mutual_info": [
+      0.9239486042511142,
+      0.3882652024451412,
+      0.7422546637552538,
+      0.9052769564168277
+    ],
+    "standard_mutual_info": [
+      0.9657288341623489,
+      0.7567049289728107,
+      0.555491073480515,
+      0.9319843978710991
+    ]
+  }
+}
