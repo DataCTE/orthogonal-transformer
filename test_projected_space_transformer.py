@@ -3,7 +3,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 import numpy as np
 from projected_space_transformer_model import (ProjectedSpaceTransformer, StandardTransformer, 
-                             CharTokenizer, TextDataset, train_orthogonal_model)
+                             CharTokenizer, TextDataset, train_projected_space_model)
 from torch.utils.data import DataLoader
 import matplotlib.pyplot as plt
 import seaborn as sns
@@ -406,7 +406,7 @@ class ProjectedSpaceConceptTester:
         if is_standard:
             return model.output_projection(x)
         else:
-            return model.token_embedder.get_logits_from_projection(x)
+            return model.token_embedder.get_logits_from_projected_space(x)
 
     def _estimate_mutual_information(self, input_ids, hidden_repr):
         input_flat = input_ids.reshape(-1).cpu().numpy()
@@ -545,7 +545,7 @@ def run_comprehensive_tests():
     aux_relational_penalty = 0.001 # Example weight for auxiliary relational loss
 
     print(f"Training ProjectedSpace Model for {epochs} epochs...")
-    train_orthogonal_model(projected_space_model, train_loader, epochs=epochs, lr=lr, 
+    train_projected_space_model(projected_space_model, train_loader, epochs=epochs, lr=lr, 
                            device=device, tokenizer=tokenizer, 
                            orth_loss_weight=projection_regularization_weight,
                            aux_relational_loss_weight=aux_relational_penalty)

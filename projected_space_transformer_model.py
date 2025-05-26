@@ -261,7 +261,7 @@ class CharTokenizer:
     def decode(self, ids):
         return ''.join([self.id_to_char.get(id, '<UNK>') for id in ids])
 
-def train_orthogonal_model(model, train_loader, epochs=10, lr=1e-3, device=None, tokenizer=None, 
+def train_projected_space_model(model, train_loader, epochs=10, lr=1e-3, device=None, tokenizer=None, 
                            print_every_n_steps=100, orth_loss_weight: float = 0.01,
                            aux_relational_loss_weight: float = 0.001): # New auxiliary loss weight
     """Training loop for the ProjectedSpace model, with projected space regularization and auxiliary relational loss."""
@@ -397,27 +397,30 @@ def train_orthogonal_model(model, train_loader, epochs=10, lr=1e-3, device=None,
         progress_bar.close()
 
 def generate_text(model, tokenizer, prompt, max_length=100, temperature=1.0):
-    """Generate text using the orthogonal model"""
+    """Generate text using the model"""
     model.eval()
+    device = next(model.parameters()).device # Get device from model
+    input_ids = torch.tensor([tokenizer.encode(prompt)], device=device) # Move to device
     
-    input_ids = torch.tensor([tokenizer.encode(prompt)])
-    
-    is_projected_space = hasattr(model, 'token_embedder') and hasattr(model.token_embedder, 'projection_layer')
+    is_projected_space_model = hasattr(model, 'token_embedder') and hasattr(model.token_embedder, 'projection_layer')
 
     with torch.no_grad():
         for _ in range(max_length):
-            if is_projected_space:
+            if is_projected_space_model: # True for ProjectedSpaceTransformer
                 logits, _ = model(input_ids)
+            elif isinstance(model, StandardTransformer): # Explicitly check for StandardTransformer
+                logits = model(input_ids)
             else:
-                print("Model structure not recognized for generate_text")
-                return
+                print(f"Model type {type(model)} not recognized for generate_text in this script.")
+                return None # Or raise error
             
             probs = F.softmax(logits[:, -1, :] / temperature, dim=-1)
             next_token = torch.multinomial(probs, 1)
             
             input_ids = torch.cat([input_ids, next_token], dim=1)
             
-            if next_token.item() == 0:
+            pad_token_id = tokenizer.char_to_id.get('<PAD>', 0) # Assuming CharTokenizer
+            if next_token.item() == pad_token_id: # Stop if PAD token
                 break
     
     return tokenizer.decode(input_ids[0].tolist())
@@ -702,7 +705,7 @@ def train_and_compare():
     standard_model = StandardTransformer(**model_params_std)
     
     print("Training ProjectedSpace Model...")
-    train_orthogonal_model(projected_space_model, train_loader, epochs=10, tokenizer=tokenizer)
+    train_projected_space_model(projected_space_model, train_loader, epochs=10, tokenizer=tokenizer, orth_loss_weight=0.01, aux_relational_loss_weight=0.001)
     
     print("\nTraining Standard Model...")
     optimizer = torch.optim.Adam(standard_model.parameters(), lr=1e-3)
