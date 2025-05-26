@@ -2,7 +2,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import numpy as np
-from ml_mirrorshadow import (MirrorShadowNextTokenPredictor, StandardTransformer, 
+from projected_space_transformer_model import (ProjectedSpaceTransformer, StandardTransformer, 
                              CharTokenizer, TextDataset, train_orthogonal_model)
 from torch.utils.data import DataLoader
 import matplotlib.pyplot as plt
@@ -13,83 +13,74 @@ from datasets import load_dataset
 import torch.optim.lr_scheduler
 from sklearn.decomposition import PCA
 
-class MirrorShadowConceptTester:
-    """Test suite for mirror shadow token prediction concept"""
+class ProjectedSpaceConceptTester:
+    """Test suite for projected space token prediction concept"""
     
-    def __init__(self, mirror_shadow_model, standard_model, tokenizer):
-        self.mirror_shadow_model = mirror_shadow_model
+    def __init__(self, projected_space_model, standard_model, tokenizer):
+        self.projected_space_model = projected_space_model
         self.standard_model = standard_model
         self.tokenizer = tokenizer
-        self.device = next(mirror_shadow_model.parameters()).device
+        self.device = next(projected_space_model.parameters()).device
         
     def test_embedding_independence(self, test_sequences: List[str]) -> Dict:
-        """Test if shadow embeddings show different independence characteristics"""
+        """Test if projected space embeddings show different independence characteristics"""
         results = {
             'sequences': test_sequences,
-            'mirror_shadow_independence': [],
+            'projected_space_independence': [],
             'd_model_pre_projection_independence': []
         }
         
-        self.mirror_shadow_model.eval()
+        self.projected_space_model.eval()
         self.standard_model.eval() 
         
         with torch.no_grad():
             for seq in test_sequences:
                 input_ids = torch.tensor([self.tokenizer.encode(seq)], device=self.device)
                 
-                # Get shadow embeddings (d_shadow)
-                shadow_embed = self.mirror_shadow_model.token_embedder(input_ids, to_shadow_space=True)
-                # Get d_model embeddings (before projection to shadow)
-                d_model_embed = self.mirror_shadow_model.token_embedder(input_ids, to_shadow_space=False)
+                # Get projected embeddings (d_projection)
+                projected_embed = self.projected_space_model.token_embedder(input_ids, to_projected_space=True)
+                # Get d_model embeddings (before projection)
+                d_model_embed = self.projected_space_model.token_embedder(input_ids, to_projected_space=False)
                 
-                # Calculate independence metrics
-                shadow_flat = shadow_embed.reshape(-1, self.mirror_shadow_model.d_shadow)
-                d_model_flat = d_model_embed.reshape(-1, self.mirror_shadow_model.d_model)
+                projected_flat = projected_embed.reshape(-1, self.projected_space_model.d_projection)
                 
-                if shadow_flat.shape[0] < 2 or shadow_flat.shape[1] < 2:
-                    shadow_score = float('nan')
+                if projected_flat.shape[0] < 2 or projected_flat.shape[1] < 2:
+                    projected_score = float('nan')
                 else:
-                    shadow_cov = torch.cov(shadow_flat.T)
-                    shadow_score = torch.abs(shadow_cov - torch.diag(torch.diag(shadow_cov))).mean().item()
+                    projected_cov = torch.cov(projected_flat.T)
+                    projected_score = torch.abs(projected_cov - torch.diag(torch.diag(projected_cov))).mean().item()
                 
-                if d_model_flat.shape[0] < 2 or d_model_flat.shape[1] < 2:
-                    d_model_score = float('nan')
-                else:
-                    d_model_cov = torch.cov(d_model_flat.T)
-                    d_model_score = torch.abs(d_model_cov - torch.diag(torch.diag(d_model_cov))).mean().item()
-                
-                results['mirror_shadow_independence'].append(shadow_score)
-                results['d_model_pre_projection_independence'].append(d_model_score)
+                results['projected_space_independence'].append(projected_score)
         
         return results
     
     def test_prediction_diversity(self, prompts: List[str], num_samples: int = 10) -> Dict:
         results = {
             'prompts': prompts,
-            'mirror_shadow_diversity': [],
+            'projected_space_diversity': [],
             'standard_diversity': []
         }
         
-        self.mirror_shadow_model.eval()
+        self.projected_space_model.eval()
         self.standard_model.eval()
 
         for prompt in prompts:
-            mirror_shadow_predictions = []
+            projected_space_predictions = []
             std_predictions = []
             
             for _ in range(num_samples):
-                # Generate with mirror_shadow model
-                ms_gen = self._generate_tokens(self.mirror_shadow_model, prompt, 20, temperature=1.0, is_standard=False)
-                mirror_shadow_predictions.append(ms_gen)
+                # Generate with projected_space model
+                ms_gen = self._generate_tokens(self.projected_space_model, prompt, 20, temperature=1.0, is_standard=False)
+                projected_space_predictions.append(ms_gen)
                 
                 # Generate with standard model
                 std_gen = self._generate_tokens(self.standard_model, prompt, 20, temperature=1.0, is_standard=True)
                 std_predictions.append(std_gen)
             
-            ms_diversity = self._calculate_diversity(mirror_shadow_predictions)
+            ms_diversity = self._calculate_diversity(projected_space_predictions)
             std_diversity = self._calculate_diversity(std_predictions)
             
-            results['mirror_shadow_diversity'].append(ms_diversity)
+            results['projected_space_diversity'].append(ms_diversity)
             results['standard_diversity'].append(std_diversity)
         
         return results
@@ -97,31 +88,31 @@ class MirrorShadowConceptTester:
     def test_robustness_to_perturbation(self, test_text: str, noise_levels: List[float]) -> Dict:
         results = {
             'noise_levels': noise_levels,
-            'mirror_shadow_robustness': [],
+            'projected_space_robustness': [],
             'standard_robustness': []
         }
         
-        self.mirror_shadow_model.eval()
+        self.projected_space_model.eval()
         self.standard_model.eval()
 
         original_ids = torch.tensor([self.tokenizer.encode(test_text)], device=self.device)
         
         with torch.no_grad():
-            ms_orig_logits, _ = self.mirror_shadow_model(original_ids)
+            ms_orig_logits, _ = self.projected_space_model(original_ids)
             std_orig_logits = self.standard_model(original_ids)
             
             for noise_level in noise_levels:
-                # For mirror_shadow model, get its shadow embeddings (d_shadow)
-                ms_embed_shadow = self.mirror_shadow_model.token_embedder(original_ids, to_shadow_space=True)
+                # For projected_space model, get its projected embeddings (d_projection)
+                ms_embed_projection = self.projected_space_model.token_embedder(original_ids, to_projected_space=True)
                 std_embed = self.standard_model.embedding(original_ids)
                 
-                ms_noisy_shadow = ms_embed_shadow + torch.randn_like(ms_embed_shadow) * noise_level
+                ms_noisy_projection = ms_embed_projection + torch.randn_like(ms_embed_projection) * noise_level
                 std_noisy = std_embed + torch.randn_like(std_embed) * noise_level
                 
                 # Forward pass with noisy embeddings
-                # For mirror_shadow_model, we are perturbing its d_shadow embeddings.
+                # For projected_space model, we are perturbing its d_projection embeddings.
                 # The is_standard flag will be False. The from_inverse_embedding_for_orth is not relevant here.
-                ms_noisy_logits = self._forward_from_embeddings(self.mirror_shadow_model, ms_noisy_shadow, is_standard=False)
+                ms_noisy_logits = self._forward_from_embeddings(self.projected_space_model, ms_noisy_projection, is_standard=False)
                 std_noisy_logits = self._forward_from_embeddings(self.standard_model, std_noisy, is_standard=True)
                 
                 ms_kl = F.kl_div(
@@ -136,7 +127,7 @@ class MirrorShadowConceptTester:
                     reduction='batchmean'
                 ).item()
                 
-                results['mirror_shadow_robustness'].append(ms_kl)
+                results['projected_space_robustness'].append(ms_kl)
                 results['standard_robustness'].append(std_kl)
         
         return results
@@ -144,20 +135,20 @@ class MirrorShadowConceptTester:
     def test_information_bottleneck(self, test_sequences: List[str]) -> Dict:
         results = {
             'sequences': test_sequences,
-            'mirror_shadow_entropy': [],
+            'projected_space_entropy': [],
             'standard_entropy': [],
-            'mirror_shadow_mutual_info': [],
+            'projected_space_mutual_info': [],
             'standard_mutual_info': []
         }
         
-        self.mirror_shadow_model.eval()
+        self.projected_space_model.eval()
         self.standard_model.eval()
 
         with torch.no_grad():
             for seq in test_sequences:
                 input_ids = torch.tensor([self.tokenizer.encode(seq)], device=self.device)
                 
-                ms_logits, shadow_preds = self.mirror_shadow_model(input_ids)
+                ms_logits, projected_reprs = self.projected_space_model(input_ids)
                 std_logits = self.standard_model(input_ids)
                 
                 ms_probs = F.softmax(ms_logits, dim=-1)
@@ -166,11 +157,11 @@ class MirrorShadowConceptTester:
                 ms_entropy = -(ms_probs * torch.log(ms_probs + 1e-8)).sum(dim=-1).mean().item()
                 std_entropy = -(std_probs * torch.log(std_probs + 1e-8)).sum(dim=-1).mean().item()
                 
-                results['mirror_shadow_entropy'].append(ms_entropy)
+                results['projected_space_entropy'].append(ms_entropy)
                 results['standard_entropy'].append(std_entropy)
                 
-                # Estimate mutual information between input and shadow_preds (d_shadow)
-                ms_mi = self._estimate_mutual_information(input_ids, shadow_preds)
+                # Estimate mutual information between input and projected_reprs (d_projection)
+                ms_mi = self._estimate_mutual_information(input_ids, projected_reprs)
                 
                 # For standard model, use its d_model embeddings
                 std_embed_hidden = self.standard_model.embedding(input_ids) 
@@ -185,14 +176,14 @@ class MirrorShadowConceptTester:
 
                 std_mi = self._estimate_mutual_information(input_ids, std_hidden_repr)
                 
-                results['mirror_shadow_mutual_info'].append(ms_mi)
+                results['projected_space_mutual_info'].append(ms_mi)
                 results['standard_mutual_info'].append(std_mi)
         
         return results
     
     def visualize_results(self, all_results: Dict):
         fig, axes = plt.subplots(2, 3, figsize=(18, 12))
-        fig.suptitle("MirrorShadow vs Standard Model Analysis", fontsize=16)
+        fig.suptitle("ProjectedSpace vs Standard Model Analysis", fontsize=16)
         
         # 1. Independence scores
         ax = axes[0, 0]
@@ -201,7 +192,7 @@ class MirrorShadowConceptTester:
         x_pos_ind = np.arange(len(x_labels_ind))
         width = 0.35
         
-        ax.bar(x_pos_ind - width/2, independence_data['mirror_shadow_independence'], width, alpha=0.7, label='MirrorShadow (d_shadow)')
+        ax.bar(x_pos_ind - width/2, independence_data['projected_space_independence'], width, alpha=0.7, label='ProjectedSpace (d_projection)')
         ax.bar(x_pos_ind + width/2, independence_data['d_model_pre_projection_independence'], width, alpha=0.7, label='MS Pre-Projection (d_model)')
         ax.set_xlabel('Test Sequences')
         ax.set_ylabel('Avg. Off-Diagonal Covariance (lower is better)')
@@ -216,7 +207,7 @@ class MirrorShadowConceptTester:
         x_labels_div = [f"Prompt {i+1}" for i in range(len(diversity_data['prompts']))]
         x_pos_div = np.arange(len(x_labels_div))
         
-        ax.bar(x_pos_div - width/2, diversity_data['mirror_shadow_diversity'], width, label='MirrorShadow', alpha=0.7)
+        ax.bar(x_pos_div - width/2, diversity_data['projected_space_diversity'], width, label='ProjectedSpace', alpha=0.7)
         ax.bar(x_pos_div + width/2, diversity_data['standard_diversity'], width, label='Standard', alpha=0.7)
         ax.set_xlabel('Prompts')
         ax.set_ylabel('Unique N-gram Ratio (higher is better)')
@@ -228,8 +219,8 @@ class MirrorShadowConceptTester:
         # 3. Robustness
         ax = axes[0, 2]
         robustness_data = all_results['robustness']
-        ax.plot(robustness_data['noise_levels'], robustness_data['mirror_shadow_robustness'], 
-                'o-', label='MirrorShadow', linewidth=2, markersize=8)
+        ax.plot(robustness_data['noise_levels'], robustness_data['projected_space_robustness'], 
+                'o-', label='ProjectedSpace', linewidth=2, markersize=8)
         ax.plot(robustness_data['noise_levels'], robustness_data['standard_robustness'], 
                 's-', label='Standard', linewidth=2, markersize=8)
         ax.set_xlabel('Input Embedding Noise Level')
@@ -244,7 +235,7 @@ class MirrorShadowConceptTester:
         x_labels_entropy = [f"Seq {i+1}" for i in range(len(bottleneck_data['sequences']))]
         x_pos_entropy = np.arange(len(x_labels_entropy))
 
-        ax.bar(x_pos_entropy - width/2, bottleneck_data['mirror_shadow_entropy'], width, label='MirrorShadow', alpha=0.7)
+        ax.bar(x_pos_entropy - width/2, bottleneck_data['projected_space_entropy'], width, label='ProjectedSpace', alpha=0.7)
         ax.bar(x_pos_entropy + width/2, bottleneck_data['standard_entropy'], width, label='Standard', alpha=0.7)
         ax.set_xlabel('Test Sequences')
         ax.set_ylabel('Prediction Entropy (higher is more uncertain/diverse)')
@@ -257,8 +248,8 @@ class MirrorShadowConceptTester:
         ax = axes[1, 1]
         x_labels_mi = [f"Seq {i+1}" for i in range(len(bottleneck_data['sequences']))]
         x_pos_mi = np.arange(len(x_labels_mi))
-        ax.bar(x_pos_mi - width/2, bottleneck_data['mirror_shadow_mutual_info'], 
-               width, label='MirrorShadow (Input to Shadow)', alpha=0.7)
+        ax.bar(x_pos_mi - width/2, bottleneck_data['projected_space_mutual_info'], 
+               width, label='ProjectedSpace (Input to Projection)', alpha=0.7)
         ax.bar(x_pos_mi + width/2, bottleneck_data['standard_mutual_info'], 
                width, label='Standard (Input to Hidden)', alpha=0.7)
         ax.set_xlabel('Test Sequences')
@@ -271,13 +262,13 @@ class MirrorShadowConceptTester:
         # 6. Summary metrics (placeholder, can be more sophisticated)
         ax = axes[1, 2]
         summary_metrics = {
-            'MS Indep.': np.nanmean(independence_data['mirror_shadow_independence']),
+            'MS Indep.': np.nanmean(independence_data['projected_space_independence']),
             'Std Indep. (d_model)': np.nanmean(independence_data['d_model_pre_projection_independence']),
-            'MS Div.': np.nanmean(diversity_data['mirror_shadow_diversity']),
+            'MS Div.': np.nanmean(diversity_data['projected_space_diversity']),
             'Std Div.': np.nanmean(diversity_data['standard_diversity']),
-            'MS Robust.': np.nanmean(robustness_data['mirror_shadow_robustness']),
+            'MS Robust.': np.nanmean(robustness_data['projected_space_robustness']),
             'Std Robust.': np.nanmean(robustness_data['standard_robustness']),
-            'MS Entropy': np.nanmean(bottleneck_data['mirror_shadow_entropy']),
+            'MS Entropy': np.nanmean(bottleneck_data['projected_space_entropy']),
             'Std Entropy': np.nanmean(bottleneck_data['standard_entropy']),
         }
         metric_names = list(summary_metrics.keys())
@@ -292,19 +283,19 @@ class MirrorShadowConceptTester:
         ax.invert_yaxis()
         
         plt.tight_layout(rect=[0, 0, 1, 0.96])
-        plt.savefig('mirror_shadow_concept_analysis.png', dpi=150)
+        plt.savefig('projected_space_analysis.png', dpi=150)
         plt.close()
-        print("Visualizations saved to 'mirror_shadow_concept_analysis.png'")
+        print("Visualizations saved to 'projected_space_analysis.png'")
 
-    def visualize_embedding_point_cloud(self, words_for_cloud: List[str], filename: str = "embedding_point_cloud.png"):
+    def visualize_embedding_point_cloud(self, words_for_cloud: List[str], filename: str = "projected_space_embedding_point_cloud.png"):
         """
         Visualizes a 2D PCA projection of character embeddings from specified words
-        for both standard d_model space and d_shadow space.
+        for both standard d_model space and d_projection space.
         """
-        self.mirror_shadow_model.eval()
+        self.projected_space_model.eval()
         
         all_standard_embeds_list = []
-        all_shadow_embeds_list = []
+        all_projection_embeds_list = []
         all_labels = []
         
         print(f"\nGenerating point cloud for words: {words_for_cloud}")
@@ -315,10 +306,10 @@ class MirrorShadowConceptTester:
                 input_ids = torch.tensor([self.tokenizer.encode(word)], device=self.device)
                 if input_ids.nelement() == 0: continue
 
-                # Get d_model embeddings (pre-projection to shadow)
-                standard_embeds_word = self.mirror_shadow_model.token_embedder(input_ids, to_shadow_space=False)
-                # Get shadow embeddings (d_shadow)
-                shadow_embeds_word = self.mirror_shadow_model.token_embedder(input_ids, to_shadow_space=True)
+                # Get d_model embeddings (pre-projection to projection)
+                standard_embeds_word = self.projected_space_model.token_embedder(input_ids, to_projected_space=False)
+                # Get projected embeddings (d_projection)
+                projection_embeds_word = self.projected_space_model.token_embedder(input_ids, to_projected_space=True)
 
                 for i, token_id in enumerate(input_ids[0]):
                     char_label = self.tokenizer.decode([token_id.item()])
@@ -326,16 +317,16 @@ class MirrorShadowConceptTester:
                     all_labels.append(f"{char_label}({word[:2]})") # e.g., "a(ki)" for 'a' in 'king'
 
                     all_standard_embeds_list.append(standard_embeds_word[0, i, :].unsqueeze(0))
-                    all_shadow_embeds_list.append(shadow_embeds_word[0, i, :].unsqueeze(0))
+                    all_projection_embeds_list.append(projection_embeds_word[0, i, :].unsqueeze(0))
         
-        if not all_standard_embeds_list or not all_shadow_embeds_list:
+        if not all_standard_embeds_list or not all_projection_embeds_list:
             print("No embeddings generated for point cloud. Skipping visualization.")
             return
 
         all_standard_embeds = torch.cat(all_standard_embeds_list, dim=0).cpu().numpy()
-        all_shadow_embeds = torch.cat(all_shadow_embeds_list, dim=0).cpu().numpy()
+        all_projection_embeds = torch.cat(all_projection_embeds_list, dim=0).cpu().numpy()
 
-        if all_standard_embeds.shape[0] < 2 or all_shadow_embeds.shape[0] < 2:
+        if all_standard_embeds.shape[0] < 2 or all_projection_embeds.shape[0] < 2:
             print("Not enough data points for PCA. Skipping point cloud visualization.")
             return
 
@@ -343,27 +334,27 @@ class MirrorShadowConceptTester:
         pca_standard = PCA(n_components=2, random_state=42)
         standard_2d = pca_standard.fit_transform(all_standard_embeds)
         
-        pca_shadow = PCA(n_components=2, random_state=42)
-        shadow_2d = pca_shadow.fit_transform(all_shadow_embeds)
+        pca_projection = PCA(n_components=2, random_state=42)
+        projection_2d = pca_projection.fit_transform(all_projection_embeds)
         
         # Plotting
         fig, axes = plt.subplots(1, 2, figsize=(16, 8))
-        fig.suptitle("Character Embedding Point Cloud (PCA Reduced)", fontsize=16)
+        fig.suptitle("Character Embedding Point Cloud (Projected Space Model - PCA Reduced)", fontsize=16)
 
         # Plot Standard d_model Embeddings
         axes[0].scatter(standard_2d[:, 0], standard_2d[:, 1], alpha=0.7)
         for i, label in enumerate(all_labels):
             axes[0].annotate(label, (standard_2d[i, 0], standard_2d[i, 1]), fontsize=8)
-        axes[0].set_title(f'Standard Embeddings (d_model={self.mirror_shadow_model.d_model})')
+        axes[0].set_title(f'Standard Embeddings (d_model={self.projected_space_model.d_model})')
         axes[0].set_xlabel('PCA Component 1')
         axes[0].set_ylabel('PCA Component 2')
         axes[0].grid(True, linestyle='--', alpha=0.5)
 
-        # Plot Shadow d_shadow Embeddings
-        axes[1].scatter(shadow_2d[:, 0], shadow_2d[:, 1], alpha=0.7, color='orange')
+        # Plot Projected d_projection Embeddings
+        axes[1].scatter(projection_2d[:, 0], projection_2d[:, 1], alpha=0.7, color='orange')
         for i, label in enumerate(all_labels):
-            axes[1].annotate(label, (shadow_2d[i, 0], shadow_2d[i, 1]), fontsize=8)
-        axes[1].set_title(f'Shadow Embeddings (d_shadow={self.mirror_shadow_model.d_shadow})')
+            axes[1].annotate(label, (projection_2d[i, 0], projection_2d[i, 1]), fontsize=8)
+        axes[1].set_title(f'Projected Embeddings (d_projection={self.projected_space_model.d_projection})')
         axes[1].set_xlabel('PCA Component 1')
         axes[1].set_ylabel('PCA Component 2')
         axes[1].grid(True, linestyle='--', alpha=0.5)
@@ -415,7 +406,7 @@ class MirrorShadowConceptTester:
         if is_standard:
             return model.output_projection(x)
         else:
-            return model.token_embedder.get_logits_from_shadow(x)
+            return model.token_embedder.get_logits_from_projection(x)
 
     def _estimate_mutual_information(self, input_ids, hidden_repr):
         input_flat = input_ids.reshape(-1).cpu().numpy()
@@ -485,7 +476,7 @@ def calculate_perplexity(model, data_loader, criterion, device, is_standard_mode
 
 def run_comprehensive_tests():
     """Run all tests"""
-    print("Loading models and data for MirrorShadow Concept Test...")
+    print("Loading models and data for ProjectedSpace Concept Test...")
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Using device: {device}")
 
@@ -522,17 +513,15 @@ def run_comprehensive_tests():
     val_loader = DataLoader(val_dataset, batch_size=32, shuffle=False, num_workers=2, pin_memory=True if device.type == 'cuda' else False) if val_texts else None
     
     d_model_val = 256
-    d_shadow_val = d_model_val
-    d_projection_bottleneck_val = d_model_val // 4 # Example: bottleneck is 1/4 of d_model
+    d_projection_val = d_model_val
 
-    model_params_mirror = dict(
+    model_params_projected = dict(
         vocab_size=tokenizer.vocab_size,
         d_model=d_model_val,
-        d_shadow=d_shadow_val, 
-        d_bottleneck_projection=d_projection_bottleneck_val, # New parameter
+        d_projection=d_projection_val,
         n_heads=8,
         n_layers=4,
-        d_ff_shadow=d_model_val * 4,
+        d_ff_projection=d_projection_val * 4,
         max_seq_len=train_max_length,
         dropout=0.1
     )
@@ -547,18 +536,18 @@ def run_comprehensive_tests():
         dropout=0.1
     )
     
-    mirror_shadow_model = MirrorShadowNextTokenPredictor(**model_params_mirror).to(device)
+    projected_space_model = ProjectedSpaceTransformer(**model_params_projected).to(device)
     standard_model = StandardTransformer(**model_params_std).to(device)
     
     epochs = 10
     lr = 1e-4
-    shadow_regularization_weight = 0.01 
+    projection_regularization_weight = 0.01 
     aux_relational_penalty = 0.001 # Example weight for auxiliary relational loss
 
-    print(f"Training MirrorShadow Model for {epochs} epochs...")
-    train_orthogonal_model(mirror_shadow_model, train_loader, epochs=epochs, lr=lr, 
+    print(f"Training ProjectedSpace Model for {epochs} epochs...")
+    train_orthogonal_model(projected_space_model, train_loader, epochs=epochs, lr=lr, 
                            device=device, tokenizer=tokenizer, 
-                           orth_loss_weight=shadow_regularization_weight,
+                           orth_loss_weight=projection_regularization_weight,
                            aux_relational_loss_weight=aux_relational_penalty)
     
     print(f"\nTraining Standard Model for {epochs} epochs...")
@@ -586,20 +575,20 @@ def run_comprehensive_tests():
     
     perplexity_criterion = nn.CrossEntropyLoss(ignore_index=tokenizer.char_to_id.get('<PAD>', 0), reduction='mean')
 
-    ms_perplexity = float('inf')
+    ps_perplexity = float('inf')
     std_perplexity = float('inf')
 
     if val_loader:
-        ms_perplexity = calculate_perplexity(mirror_shadow_model, val_loader, perplexity_criterion, device, is_standard_model=False, tokenizer=tokenizer)
+        ps_perplexity = calculate_perplexity(projected_space_model, val_loader, perplexity_criterion, device, is_standard_model=False, tokenizer=tokenizer)
         std_perplexity = calculate_perplexity(standard_model, val_loader, perplexity_criterion, device, is_standard_model=True, tokenizer=tokenizer)
-        print(f"MirrorShadow Model Perplexity: {ms_perplexity:.2f}")
+        print(f"ProjectedSpace Model Perplexity: {ps_perplexity:.2f}")
         print(f"Standard Model Perplexity: {std_perplexity:.2f}")
     else:
         print("Skipping perplexity calculation as no validation data/loader was available.")
 
-    tester = MirrorShadowConceptTester(mirror_shadow_model, standard_model, tokenizer)
+    tester = ProjectedSpaceConceptTester(projected_space_model, standard_model, tokenizer)
     
-    print("\nRunning comprehensive tests for MirrorShadow model...")
+    print("\nRunning comprehensive tests for ProjectedSpace model...")
     
     test_sequences = ["The quick brown fox", "Machine learning models", "Neural networks are", "Deep learning has"]
     independence_results = tester.test_embedding_independence(test_sequences)
@@ -623,9 +612,9 @@ def run_comprehensive_tests():
             'train_max_length': train_max_length,
             'epochs': epochs,
             'learning_rate': lr,
-            'model_params_mirror': model_params_mirror,
+            'model_params_projected': model_params_projected,
             'model_params_standard': model_params_std,
-            'mirror_shadow_perplexity': ms_perplexity if val_loader else 'N/A',
+            'projected_space_perplexity': ps_perplexity if val_loader else 'N/A',
             'standard_perplexity': std_perplexity if val_loader else 'N/A',
         },
         'independence': independence_results,
@@ -634,7 +623,7 @@ def run_comprehensive_tests():
         'bottleneck': bottleneck_results
     }
     
-    results_filename = 'mirror_shadow_test_results.json'
+    results_filename = 'projected_space_test_results.json'
     print(f"\nSaving detailed results to '{results_filename}'")
     with open(results_filename, 'w') as f:
         class NpEncoder(json.JSONEncoder):
@@ -662,48 +651,48 @@ def run_comprehensive_tests():
     tester.visualize_embedding_point_cloud(point_cloud_words)
     
     print("\n" + "="*50)
-    print("COMPREHENSIVE MIRROR SHADOW TEST SUMMARY")
+    print("COMPREHENSIVE PROJECTED SPACE TEST SUMMARY")
     print("="*50)
 
     if val_loader:
         print(f"\nPERPLEXITY (on {dataset_name} validation - {max_val_samples} samples):")
-        print(f"   MirrorShadow Model: {ms_perplexity:.2f}")
+        print(f"   ProjectedSpace Model: {ps_perplexity:.2f}")
         print(f"   Standard Model:   {std_perplexity:.2f}")
     
     print("\n1. EMBEDDING INDEPENDENCE (Avg. Off-Diagonal Covariance):")
-    avg_ms_indep = np.nanmean(independence_results['mirror_shadow_independence'])
+    avg_ps_indep = np.nanmean(independence_results['projected_space_independence'])
     avg_dmodel_indep = np.nanmean(independence_results['d_model_pre_projection_independence'])
-    print(f"   MirrorShadow (d_shadow space): {avg_ms_indep:.4f}")
+    print(f"   ProjectedSpace (d_projection space): {avg_ps_indep:.4f}")
     print(f"   MS Pre-Projection (d_model space): {avg_dmodel_indep:.4f}")
-    if avg_dmodel_indep > 0 : print(f"   Reduction from d_model to d_shadow: {(avg_dmodel_indep - avg_ms_indep) / avg_dmodel_indep * 100:.1f}%")
+    if avg_dmodel_indep > 0 : print(f"   Reduction from d_model to d_projection: {(avg_dmodel_indep - avg_ps_indep) / avg_dmodel_indep * 100:.1f}%")
     
     print("\n2. PREDICTION DIVERSITY:")
-    avg_ms_div = np.mean(diversity_results['mirror_shadow_diversity'])
+    avg_ps_div = np.mean(diversity_results['projected_space_diversity'])
     avg_std_div = np.mean(diversity_results['standard_diversity'])
-    print(f"   MirrorShadow: {avg_ms_div:.4f}")
+    print(f"   ProjectedSpace: {avg_ps_div:.4f}")
     print(f"   Standard:   {avg_std_div:.4f}")
-    if avg_std_div > 0 : print(f"   Improvement: {(avg_ms_div - avg_std_div) / avg_std_div * 100:.1f}%")
+    if avg_std_div > 0 : print(f"   Improvement: {(avg_ps_div - avg_std_div) / avg_std_div * 100:.1f}%")
     
     print("\n3. ROBUSTNESS (avg KL divergence):")
-    avg_ms_rob = np.mean(robustness_results['mirror_shadow_robustness'])
+    avg_ps_rob = np.mean(robustness_results['projected_space_robustness'])
     avg_std_rob = np.mean(robustness_results['standard_robustness'])
-    print(f"   MirrorShadow: {avg_ms_rob:.4f}")
+    print(f"   ProjectedSpace: {avg_ps_rob:.4f}")
     print(f"   Standard:   {avg_std_rob:.4f}")
-    if avg_std_rob > 0 : print(f"   Improvement (lower KL is better): {(avg_std_rob - avg_ms_rob) / avg_std_rob * 100:.1f}%")
+    if avg_std_rob > 0 : print(f"   Improvement (lower KL is better): {(avg_std_rob - avg_ps_rob) / avg_std_rob * 100:.1f}%")
     
     print("\n4. INFORMATION PROPERTIES:")
-    avg_ms_ent = np.mean(bottleneck_results['mirror_shadow_entropy'])
+    avg_ps_ent = np.mean(bottleneck_results['projected_space_entropy'])
     avg_std_ent = np.mean(bottleneck_results['standard_entropy'])
-    avg_ms_mi = np.nanmean(bottleneck_results['mirror_shadow_mutual_info'])
+    avg_ps_mi = np.nanmean(bottleneck_results['projected_space_mutual_info'])
     avg_std_mi = np.nanmean(bottleneck_results['standard_mutual_info'])
     
-    avg_ms_mi = np.nan_to_num(avg_ms_mi, nan=0.0)
+    avg_ps_mi = np.nan_to_num(avg_ps_mi, nan=0.0)
     avg_std_mi = np.nan_to_num(avg_std_mi, nan=0.0)
 
-    print(f"   Entropy - MirrorShadow: {avg_ms_ent:.4f}, Standard: {avg_std_ent:.4f}")
-    print(f"   Mutual Info - MirrorShadow: {avg_ms_mi:.4f}, Standard: {avg_std_mi:.4f}")
+    print(f"   Entropy - ProjectedSpace: {avg_ps_ent:.4f}, Standard: {avg_std_ent:.4f}")
+    print(f"   Mutual Info - ProjectedSpace: {avg_ps_mi:.4f}, Standard: {avg_std_mi:.4f}")
     
-    print(f"\nAnalysis complete! Check 'mirror_shadow_concept_analysis.png' for visualizations.")
+    print(f"\nAnalysis complete! Check 'projected_space_analysis.png' for visualizations.")
     print(f"Detailed results saved to '{results_filename}'")
 
 if __name__ == "__main__":
