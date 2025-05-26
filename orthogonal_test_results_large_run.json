@@ -1,0 +1,117 @@
+{
+  "meta_info": {
+    "dataset_name": "wikitext",
+    "dataset_config": "wikitext-2-raw-v1",
+    "max_train_samples": 5000,
+    "max_val_samples": 500,
+    "train_max_length": 128,
+    "epochs": 10,
+    "learning_rate": 0.0001,
+    "model_params": {
+      "vocab_size": 419,
+      "d_model": 256,
+      "n_heads": 8,
+      "n_layers": 4,
+      "d_ff": 1024,
+      "max_seq_len": 128,
+      "dropout": 0.1
+    },
+    "orthogonal_perplexity": 4.811266841668779,
+    "standard_perplexity": 6.6382576119993315
+  },
+  "independence": {
+    "sequences": [
+      "The quick brown fox",
+      "Machine learning models",
+      "Neural networks are",
+      "Deep learning has"
+    ],
+    "orthogonal_independence": [
+      0.1355804204940796,
+      0.10841943323612213,
+      0.12323470413684845,
+      0.12400810420513153
+    ],
+    "standard_independence": [
+      0.19643816351890564,
+      0.2013351172208786,
+      0.21567603945732117,
+      0.22262975573539734
+    ]
+  },
+  "diversity": {
+    "prompts": [
+      "The ",
+      "Machine learning ",
+      "Neural network is ",
+      "Deep learning can "
+    ],
+    "orthogonal_diversity": [
+      0.8590909090909091,
+      0.5657142857142857,
+      0.5138888888888888,
+      0.55
+    ],
+    "standard_diversity": [
+      0.8090909090909091,
+      0.5085714285714286,
+      0.48333333333333334,
+      0.48055555555555557
+    ]
+  },
+  "robustness": {
+    "noise_levels": [
+      0.0,
+      0.05,
+      0.1,
+      0.2,
+      0.5
+    ],
+    "orthogonal_robustness": [
+      -4.058119291994178e-12,
+      2.2678332243231125e-06,
+      8.100943887257017e-06,
+      2.3713864720775746e-05,
+      0.0001882346987258643
+    ],
+    "standard_robustness": [
+      0.0012754368362948298,
+      0.0012755908537656069,
+      0.00127950229216367,
+      0.0012764633866026998,
+      0.0013147912686690688
+    ]
+  },
+  "bottleneck": {
+    "sequences": [
+      "The quick brown fox",
+      "Machine learning models",
+      "Neural networks are",
+      "Deep learning has"
+    ],
+    "orthogonal_entropy": [
+      1.443329930305481,
+      1.5231857299804688,
+      1.622649908065796,
+      1.6114604473114014
+    ],
+    "standard_entropy": [
+      1.7617952823638916,
+      2.0027973651885986,
+      2.1649508476257324,
+      2.0659003257751465
+    ],
+    "orthogonal_mutual_info": [
+      0.7780228820279698,
+      0.7904405773632548,
+      0.9611432270899756,
+      1.0483822686903004
+    ],
+    "standard_mutual_info": [
+      0.9203053590383821,
+      0.7406700446107299,
+      1.1070689293131246,
+      0.9319843978711
+    ]
+  }
+}
