@@ -1,70 +1,149 @@
-# Orthogonal Concept Transformer Analysis
+# Orthogonal Transformer
 
 ## From an information dynamics perspective, standard Transformers learn an implicit latent ontology (a system of representing concepts and their relationships) through end-to-end optimization. Through orthogonal feature independence—we can promote the emergence of a more parsimonious or compositionally-structured ontology.
 
-This repository explores the concept of using orthogonal transformations within a Transformer architecture to influence the learned latent representations. The primary goal is to investigate whether enforcing orthogonality can lead to more disentangled, robust, and interpretable models.
+This repository explores methods for influencing the learned latent representations within Transformer architectures, primarily by leveraging or encouraging orthogonality and structured transformations. The goal is to investigate paths towards more disentangled, robust, and interpretable models.
 
-The core idea is implemented in `ml.py` and tested via `test_orthogonal_concept.py`.
+Two main approaches are currently explored:
 
-## Key Visualizations
+1. **Baseline Orthogonal Model:** Implemented in `orthogonal_transformer_model.py` and tested via `test_orthogonal_transformer.py`. This model uses a learnable orthogonal transformation applied directly to token embeddings.
 
-### Character Embedding Point Cloud (Orthogonal Model)
+2. **Architectural Exploration - Projected Space Model:** Implemented in `projected_space_transformer_model.py` and tested via `test_projected_space_transformer.py`. This model applies double orthogonal transformations, creating a "projected space" where all transformer operations occur.
 
-This plot visualizes the 2D PCA-reduced character embeddings from a set of sample words. It compares the embeddings before the orthogonal transformation ("Standard Embeddings") and after the transformation ("Inverse/Orthogonal Embeddings"). This helps to qualitatively assess how the orthogonalization reshapes the representational space.
+---
 
-*(You will need to run `test_orthogonal_concept.py` to generate this image. It will be saved as `orthogonal_embedding_point_cloud.png`)*
+## Results Summary
 
-![Character Embedding Point Cloud](orthogonal_embedding_point_cloud.png)
+Both models significantly outperform the standard transformer baseline:
 
-### Comprehensive Metric Analysis
+| Model | Perplexity ↓ | Independence ↓ | Diversity ↑ | Robustness ↓ |
+|-------|------------|----------------|-------------|--------------|
+| **Orthogonal** | **4.83** | **0.1224** | **0.5986** | **0.0000** |
+| **Projected Space** | **4.73** | **0.1082** | **0.6023** | **0.9623** |
+| Standard | 6.63 | 0.2173 | 0.5797 | 28.5906 |
 
-The `test_orthogonal_concept.py` script also generates a comprehensive analysis of various metrics, comparing the orthogonal model against a standard Transformer baseline. These metrics include perplexity, embedding independence, prediction diversity, robustness to perturbation, and information-theoretic properties (entropy, mutual information).
+---
 
-*(This plot is saved as `orthogonal_concept_analysis.png` when `test_orthogonal_concept.py` is run.)*
+## 1. Baseline Orthogonal Model (`orthogonal_transformer_model.py`)
 
-![Comprehensive Metric Analysis](orthogonal_concept_analysis.png)
+This approach focuses on applying a learnable orthogonal transformation directly to the token embeddings and processing sequences in this transformed "inverse" space.
 
-## Observations from `test_orthogonal_concept.py`
+### Key Visualizations (Baseline Orthogonal Model)
 
-The latest comprehensive test run yielded the following key performance metrics:
+#### Character Embedding Point Cloud
+This plot visualizes the 2D PCA-reduced character embeddings from sample words, comparing embeddings before ("Standard") and after ("Inverse/Orthogonal") the orthogonal transformation.
 
-**PERPLEXITY (on wikitext validation - 500 samples):**
-*   Orthogonal Model: **4.83**
-*   Standard Model:   6.63
+![Character Embedding Point Cloud - Baseline Orthogonal Model](orthogonal_embedding_point_cloud.png)
 
-**1. EMBEDDING INDEPENDENCE (Avg. Off-Diagonal Covariance):**
-*   Orthogonal: **0.1224**
-*   Standard:   0.2173
-*   Improvement: **43.7%**
+#### Comprehensive Metric Analysis
+Compares the baseline orthogonal model against a standard Transformer on various metrics.
 
-**2. PREDICTION DIVERSITY (Unique N-gram Ratio):**
-*   Orthogonal: **0.5986**
-*   Standard:   0.5797
-*   Improvement: **3.2%**
+![Comprehensive Metric Analysis - Baseline Orthogonal Model](orthogonal_concept_analysis.png)
 
-**3. ROBUSTNESS (avg KL divergence from perturbed inputs):**
-*   Orthogonal: **0.0000** 
-*   Standard:   0.0015
-*   Improvement (lower KL is better): **96.7%**
+### Results (Baseline Orthogonal Model)
 
-**4. INFORMATION PROPERTIES:**
-*   Entropy (Output Prediction) - Orthogonal: **1.5294**, Standard: 2.0003
-*   Mutual Info (Input vs. Hidden Repr.) - Orthogonal: **0.7000**, Standard: 0.8380
+**PERPLEXITY (wikitext validation - 500 samples):**
+- Orthogonal Model: **4.83**
+- Standard Model: 6.63
 
-These results highlight that the orthogonal model:
-- Achieves significantly better perplexity than the standard model.
-- Demonstrates substantially improved embedding independence, indicating more disentangled features.
-- Shows a slight improvement in prediction diversity.
-- Exhibits exceptional robustness to input perturbations.
-- Operates with lower output prediction entropy (more confident predictions) and lower mutual information between input and its (inverse) hidden representations, suggesting a more compressed or focused encoding of information.
+**EMBEDDING INDEPENDENCE (Avg. Off-Diagonal Covariance):**
+- Orthogonal: **0.1224**
+- Standard: 0.2173
+- Improvement: **43.7%**
 
-These characteristics strongly suggest that the orthogonalization constraint encourages the model to learn a more structured, disentangled, and efficient latent space, leading to tangible performance benefits.
+**PREDICTION DIVERSITY (Unique N-gram Ratio):**
+- Orthogonal: **0.5986**
+- Standard: 0.5797
+- Improvement: **3.2%**
+
+**ROBUSTNESS (avg KL divergence):**
+- Orthogonal: **0.0000**
+- Standard: 0.0015
+- Improvement: **96.7%**
+
+**INFORMATION PROPERTIES:**
+- Entropy - Orthogonal: **1.5294**, Standard: 2.0003
+- Mutual Info - Orthogonal: **0.7000**, Standard: 0.8380
+
+---
+
+## 2. Architectural Exploration - Projected Space Model (`projected_space_transformer_model.py`)
+
+This model applies a double orthogonal transformation: first the baseline orthogonal transform, then a second orthogonal projection. All transformer operations occur in this doubly-transformed space, creating a more deeply integrated architectural change.
+
+### Key Visualizations (Projected Space Model)
+
+#### Character Embedding Point Cloud
+Visualizes character embeddings after single orthogonal transformation vs. double orthogonal transformation.
+
+![Character Embedding Point Cloud - Projected Space Model](projected_space_embedding_point_cloud.png)
+
+#### Comprehensive Metric Analysis
+Compares the Projected Space model against a standard Transformer.
+
+![Comprehensive Metric Analysis - Projected Space Model](projected_space_analysis.png)
+
+### Results (Projected Space Model)
+
+**PERPLEXITY (wikitext validation - 500 samples):**
+- Projected Space Model: **4.73** (best)
+- Standard Model: 6.59
+
+**EMBEDDING INDEPENDENCE (Avg. Off-Diagonal Covariance):**
+- Projected Space (double orthogonal): **0.1082** (best)
+- Single Orthogonal (d_model space): 0.1351
+- Reduction: **19.9%**
+
+**PREDICTION DIVERSITY:**
+- Projected Space: **0.6023** (best)
+- Standard: 0.5865
+- Improvement: **2.7%**
+
+**ROBUSTNESS (avg KL divergence):**
+- Projected Space: **0.9623**
+- Standard: 28.5906
+- Improvement: **96.6%**
+
+**INFORMATION PROPERTIES:**
+- Entropy - Projected Space: **1.5796**, Standard: 1.9921
+- Mutual Info - Projected Space: **0.7399**, Standard: 0.8025
+
+---
+
+## Key Insights
+
+1. **Performance**: Both orthogonal models achieve significantly better perplexity than standard transformers (~27% improvement)
+
+2. **Disentanglement**: The double orthogonal transformation (Projected Space) achieves the highest feature independence (0.1082), suggesting better disentanglement of representations
+
+3. **Robustness**: Both models show dramatic improvements in robustness to input perturbations (>96% reduction in KL divergence)
+
+4. **Information Processing**: Lower entropy and mutual information suggest more efficient, focused representations
+
+---
 
 ## Running the Code
 
-1.  Ensure you have the necessary dependencies installed (PyTorch, NumPy, Matplotlib, Seaborn, Scikit-learn, Datasets, TQDM).
-2.  Execute the main test script:
-    ```bash
-    python test_orthogonal_concept.py
-    ```
-3.  The script will train both the orthogonal model and a standard baseline, run a series of tests, save detailed results to `orthogonal_test_results_large_run.json`, and generate the `orthogonal_concept_analysis.png` and `orthogonal_embedding_point_cloud.png` visualizations.
+1. Install dependencies:
+   ```bash
+   pip install torch numpy matplotlib seaborn scikit-learn datasets tqdm
+   ```
+
+2. **Test the Baseline Orthogonal Model:**
+   ```bash
+   python test_orthogonal_transformer.py
+   ```
+
+3. **Test the Projected Space Model:**
+   ```bash
+   python test_projected_space_transformer.py
+   ```
+
+---
+
+## Future Directions
+
+- Investigate the theoretical foundations of why orthogonal transformations improve language modeling
+- Scale to larger models and datasets
+- Explore applications to other domains beyond language
+- Analyze the learned orthogonal matrices for interpretability

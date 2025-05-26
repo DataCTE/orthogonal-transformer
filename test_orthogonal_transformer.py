@@ -2,7 +2,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import numpy as np
-from ml import (OrthogonalNextTokenPredictor, StandardTransformer, 
+from orthogonal_transformer_model import (OrthogonalNextTokenPredictor, StandardTransformer, 
                 CharTokenizer, TextDataset, train_orthogonal_model)
 from torch.utils.data import DataLoader
 import matplotlib.pyplot as plt
